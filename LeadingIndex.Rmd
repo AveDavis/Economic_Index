@@ -17,16 +17,14 @@ editor_options:
 
 # 1.0 Introduction
 
-This project explores the calculation of the
-Conference Board Leading Economic Index (LEI). The LEI is a composite
+This project explores the calculation of a Leading Economic Index (LEI). The LEI is a composite
 index that is designed to forecast future economic activity. It is
 composed of several individual economic indicators that historically
 have shown consistent patterns of leading the overall economy. The LEI
 is used by economists, policymakers, and business leaders to predict
-economic trends and potential turning points in economic activity.
+economic trends and potential turning points in economic activity. We will be loosely following the [Conference Board's methodology](https://www.conference-board.org/data/bci/index.cfm?id=2154) in order to calculate our index. 
 
-Sections 2.0 - 4.0 will be where data collection and transformations will take place so that we can get insites from the index in section 5.0 and 6.0 and lastly section 7.0 is a collection of references used in this project. 
-
+Sections 2.0 - 4.0 will be where data collection and transformations will take place. Then in sections 5.0 and 6.0 we will analyze the Index and lastly section 7.0 is a collection of references used in this project. 
 
 
 **Conference Board Leading Index Components (FRED ID)**
@@ -41,6 +39,8 @@ Sections 2.0 - 4.0 will be where data collection and transformations will take p
 
 4.  BCI-130 ISM new order index (NOCDFSA066MSFRBPHI)
 
+- This is also a proxy because it only encompases the philly fed district. This information is hard to find so well use it for now
+
 5.  BCI-33 Manufacturers' new orders, non-defense capital goods excl.
     aircraft (NEWORDER)
 
@@ -50,8 +50,15 @@ Sections 2.0 - 4.0 will be where data collection and transformations will take p
 
 8.  BCI-107 Leading Credit Index (M2REAL)
 
+ 1.) 2-years Swap Spread (real time), 
+  2.) LIBOR 3 month less 3 month Treasury-Bill yield spread (real time),
+  3.) Debit balances at margin account at broker dealer (monthly), 
+  4.) AAII Investors Sentiment Bullish (%) less Bearish (%) (weekly), 
+  5.) Senior Loan Officers C&I loan survey – Bank tightening Credit to Large and Medium Firms (quarterly),
+  6.) Security Repurchases (quarterly) from the Total Finance-Liabilities section of Federal Reserve’s flow of fund report
+
 -   Substituting this one with M2 because we don't have access to this
-    index and M2 can captuer some of the information in this index.
+    index and M2 can capture some of the information in this index. Will have      to come back to improve this.
 
 9.  BCI-129 Interest rate spread, 10-year Treasury bonds less federal
     funds (T10YFF)
@@ -131,10 +138,10 @@ of.
 ```{r fetch_function}
 # function that collects our data 
 # coerce to data frame
-fetch_data <- function(x) {
+fetch_data <- function(x, frequency = "m") {
   as.data.frame(fredr(
     series_id = x,
-    frequency = "m"
+    frequency = frequency
   ))
 }
 ```
@@ -158,7 +165,7 @@ data_list <- list()
 
 # loop through list to collect data and store in list
 for(i in 1:length(cmpts)){
-  data_list[[cmpts[i]]] <- fetch_data(cmpts[i])
+  data_list[[cmpts[i]]] <- fetch_data(cmpts[i], "m")
 }
 ```
 
@@ -258,6 +265,23 @@ turning_points$peak <- as.yearmon(as.Date(turning_points$peak, format = "%Y-%m-%
 turning_points$trough <- as.yearmon(as.Date(turning_points$trough, format = "%Y-%m-%d"))
 
 ```
+
+
+## 2.4 GDP Data 
+
+```{r }
+rgdp_q <- fetch_data("GDPC1", frequency = "q")
+
+rgdp_q <- rgdp_q |>
+  rename(GDPC1 = value) |>
+  mutate(date = yearquarter(as.Date(date, format = "%Y-%m-%d"))) |>
+  select(date, GDPC1)
+  
+```
+
+
+
+
 
 # 3.0 Plot Components
 
@@ -395,6 +419,15 @@ plots_list[[11]]  +
   recession_bars(17,44)
 
 ```
+
+```{r}
+gdp_plot <- cmpt_plot(rgdp_q,"GDPC1")
+
+gdp_plot +
+labs(title = "Real GDP") +
+  recession_bars(22,44)
+```
+
 
 # 4.0 Calculate Leading Index
 
@@ -597,7 +630,7 @@ stargazer(pchange_results, type = "text")
 
 ## 4.6 Step (6)
 
-The index is rebased to average 100 in the base year.
+The index is re-based to average 100 in the base year.
 
 ```{r rebase, warning=FALSE}
 
@@ -753,129 +786,191 @@ The recession triggered by the pandemic is an interesting case that is somewhat 
 
 In this section we will evaluate the Leading index and see how well it aligns with the established recession dates and then we will use the Granger Causality test to see if the leading index causes the INDPRO series that we are using as a proxy for the current state of the economy. 
 
+
+### 6.2.1 Clean Up data 
+
+```{r}
+# make data quaterly 
+df_q <- df |>
+  select(date, LEI, INDPRO) |>
+  mutate(quarter = as.yearqtr(date)) |>
+  group_by(quarter) |>
+  summarise(LEI = mean(LEI),
+            INDPRO = mean(INDPRO))
+  
+```
+
+
+
+```{r tsibblification}
+df_tsibble <-  df_q |>
+  mutate(date = yearquarter(quarter)) |>
+  select(-quarter) |>
+  as_tsibble(index = date) 
+
+ind_eva <- left_join(df_tsibble, rgdp_q, by = "date")
+
+```
+
 ## 6.1 turing point Analysis 
 
 
-Use the `BCDating` package and specifically the Harding-Pagan method for detecting turning points. Unfortunately we cannot use `tsisbble` objects with the turning points algorithm so we must create a time series object. Additionally this algorithm is for designed for quarterly data so I have adusted the mincycle and minphase length. 
+Use the `BCDating` package and specifically the Harding-Pagan method for detecting turning points. The first thing we will do here is take a look at the LEI index with the official NBER recession dates. This will allow us to compare with the turning points detected in our index. 
+
+
+```{r plot_leading_index}
+cmpt_plot(df,"LEI", color = "blue") + 
+  recession_bars(31,34) + 
+  labs(title = "Leading Index")
+```
+
+
+```{r}
+# turning points 
+turning_points[31:34,]
+```
+
+
+ 
+
 ```{r turning_points}
-newind <- ts(df$LEI,
+# Create time series object because this works with S4 not S3
+newind <- ts(ind_eva$LEI,
              start = 1993, 
              end = 2023,
-             frequency = 12)
+             frequency = 4)
 
-turns <- BBQ(newind, mincycle = 24, minphase = 4, name = "" )
+# fit model 
+turns <- BBQ(newind, mincycle = 5, minphase = 2, name = "" )
 
 
 # Plot turns
 plot(turns, main = "Leading Index turing points")
 
+```
+```{r}
 print(turns)
 ```
 
+
+
+
+
 ## 6.2 Granger causality test 
 
-To preform the Granger causality test we need to make sure that our data is stationary. This will be done through examining the results from the Autocorrelation function and the KPSS unit root test. Then we will diffrence the data as needed. 
+To preform the Granger causality test we need to make sure that our data is stationary. This will be done through examining the results from the Autocorrelation function and the KPSS unit root test. Then we will difference the data as needed. 
 
-```{r tsibblification}
-df_tsibble <-  df |>
-  mutate(date = yearmonth(date)) |>
-  as_tsibble(index = date)
-```
 
-### 6.23 Test stationarity of LEI 
+## 6.3 Test stationarity
+
+
+### 6.3.1 LEI test and diffrencing
+
 ```{r test_stationarity_LEI}
-df_tsibble|>
+ind_eva |>
   ACF(LEI) |>
   autoplot()+
   labs(title = "ACF of LEI")
 
-df_tsibble|>
+ind_eva |>
   PACF(LEI) |>
   autoplot()+
   labs(title = "PACF of LEI ")
 
-df_tsibble|>
+ind_eva |>
   features(LEI, unitroot_kpss)
 ```
 ```{r re_test_LEI}
-df_tsibble|>
+ind_eva |>
   ACF(difference(LEI)) |>
   autoplot()+
   labs(title = "ACF of LEI")
 
-df_tsibble|>
+ind_eva |>
   PACF(difference(LEI)) |>
   autoplot()+
   labs(title = "PACF of LEI ")
 
-df_tsibble|>
+ind_eva |>
   features(difference(LEI), unitroot_kpss)
 
 
-df_tsibble <- df_tsibble |>
+ind_eva  <- ind_eva  |>
   mutate(LEI_diff = difference(LEI))
 ```
-### 6.23 Test stationarity of INDPRO
+### 6.3.2  Real GDP test and diffrencing 
 
 ```{r test_stationarity_INDPRO}
-df_tsibble|>
-  ACF(INDPRO) |>
+ind_eva |>
+  ACF(GDPC1) |>
   autoplot()+
-  labs(title = "ACF of INDPRO")
+  labs(title = "ACF of Real GDP")
 
-df_tsibble|>
-  PACF(INDPRO) |>
+ind_eva |>
+  PACF(GDPC1) |>
   autoplot()+
-  labs(title = "PACF of INDPRO ")
+  labs(title = "PACF of Real GDP")
 
-df_tsibble|>
-  features(INDPRO, unitroot_kpss)
+ind_eva |>
+  features(GDPC1, unitroot_kpss)
 ```
 
 
 ```{r re_test_INDPRO}
-df_tsibble|>
-  ACF(difference(INDPRO)) |>
+ind_eva |>
+  ACF(difference(GDPC1)) |>
   autoplot()+
-  labs(title = "ACF of INDPRO")
+  labs(title = "ACF of Real GDP")
 
-df_tsibble|>
-  PACF(difference(INDPRO)) |>
+ind_eva |>
+  PACF(difference(GDPC1)) |>
   autoplot()+
-  labs(title = "PACF of INDPRO ")
+  labs(title = "PACF of Real GDP")
 
-df_tsibble|>
-  features(difference(INDPRO), unitroot_kpss)
+ind_eva |>
+  features(difference(GDPC1), unitroot_kpss)
 
 
-df_tsibble <- df_tsibble |>
-  mutate(INDPRO_diff = difference(INDPRO))
+ind_eva  <- ind_eva  |>
+  mutate(GDPC1_diff = difference(GDPC1))
 ```
-
-### 6.24 Create ts objects 
-
 
 
 ```{r}
-LEI_ts <- ts(df_tsibble$LEI_diff,
-             start = 1993, 
-             end = 2023,
-             frequency = 12)
-
-INDPRO_ts <- ts(df_tsibble$INDPRO_diff,
-             start = 1993, 
-             end = 2023,
-             frequency = 12)
+# lets plot the differenced data here for further conformation
 ```
 
 
 
+
+
+
+
+### 6.4 Preform Granger Causality test 
+
+
 ```{r}
+# creat time serise objects for model
+LEI_ts <- ts(ind_eva $LEI_diff,
+             start = 1993, 
+             end = 2023,
+             frequency = 12)
+
+GDPC1_ts <- ts(ind_eva $GDPC1,
+             start = 1993, 
+             end = 2023,
+             frequency = 12)
+```
+
+
+
+```{r}
+# fit test 
 lmtest::grangertest(LEI_ts, INDPRO_ts, order=2, test="F")
   
 ```
 
-The Granger causality test shows that the LEI causes INDPRO. This finding indicates that we can use the lEI to understand where the economy is going to be in the business cycle. An important thing to remember is that we are using INDPRO to proxy for the state of the economy and this is just an approximation. With that being said this Leading Index of Economic Indicators dose a reasonably good job at forecasting movements in the economy 
+The Granger causality test shows that the LEI causes GDP. This finding indicates that we can use the lEI to understand where the economy is going to be in the business cycle. An important thing to remember is that we are using INDPRO to proxy for the state of the economy and this is just an approximation. With that being said this Leading Index of Economic Indicators dose a reasonably good job at forecasting movements in the economy 
 
 
 
