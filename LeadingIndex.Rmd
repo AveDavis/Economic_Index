@@ -1,0 +1,955 @@
+---
+title: "Leading Economic Index Caculation"
+author: "Avery Davis"
+date: "2024-05-14"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# 1.0 Introduction
+
+This project explores the calculation of the
+Conference Board Leading Economic Index (LEI). The LEI is a composite
+index that is designed to forecast future economic activity. It is
+composed of several individual economic indicators that historically
+have shown consistent patterns of leading the overall economy. The LEI
+is used by economists, policymakers, and business leaders to predict
+economic trends and potential turning points in economic activity.
+
+Sections 2.0 - 4.0 will be where data collection and transformations will take place so that we can get insites from the index in section 5.0 and 6.0 and lastly section 7.0 is a collection of references used in this project. 
+
+
+
+**Conference Board Leading Index Components (FRED ID)**
+
+1.  BCI-01 Average weekly hours, manufacturing (AWHMAN)
+
+2.  BCI-05 Average weekly initial claims for unemployment insurance
+    (ICSA)
+
+3.  BCI-08 Manufacturers' new orders, consumer goods and materials
+    (ACOGNO)
+
+4.  BCI-130 ISM new order index (NOCDFSA066MSFRBPHI)
+
+5.  BCI-33 Manufacturers' new orders, non-defense capital goods excl.
+    aircraft (NEWORDER)
+
+6.  BCI-29 Building permits, new private housing units (PERMIT)
+
+7.  BCI-19 Stock prices, 500 common stocks (M1346BUSM156NNBR)
+
+8.  BCI-107 Leading Credit Index (M2REAL)
+
+-   Substituting this one with M2 because we don't have access to this
+    index and M2 can captuer some of the information in this index.
+
+9.  BCI-129 Interest rate spread, 10-year Treasury bonds less federal
+    funds (T10YFF)
+
+10. BCI-125 Avg. consumer expectations for business and economic
+    conditions (UMCSENT)
+    
+11. Industrial Production: Total Index (INDPRO)
+
+  - INDPRO is used as a proxy for the coincident index. It is one of the componets of the coincident index and has movements that are close to that of the coincident index. I have seen this done in several academic papers. 
+
+
+# 2.0 Prepare Workspace.
+
+
+```{r prepare_workspace, warning=FALSE}
+# clean workspace
+rm(list = ls())
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Prepare needed libraries
+packages <- c("ggplot2",     # Visualizations 
+              "dplyr",       # Data manipulation
+              "tidyr",       # Data formatting 
+              "stargazer",   # LaTex tables 
+              "knitr",       # markdown output formatting
+              "readxl",      # read in excel files
+              "tsibble",     # tidy timeseries extension
+              "zoo",         # time-indexing and analysis
+              "hpfilter",    # Hodrick-Prescott Filter
+              "forecast",    # forecasting techniques 
+              "lubridate",   # Date handling
+              "tseries",     # Tim Serise Analysis
+              "fabletools",  # tools for fable framework
+              "fable",       # Forecasting for Tidy
+              "fpp3",
+              "BCDating",    # Business Cycle Dating tools
+              "fredr",      # R bindings for Fred API
+              "purrr",        # functional programming tools
+              "BCDating",  # Business cycle dating tools
+              "lintr"
+              )
+
+# install and upload packages 
+  for (i in 1:length(packages)) {
+    if (!packages[i] %in% rownames(installed.packages())) {
+      install.packages(packages[i]
+                       , repos = "http://cran.rstudio.com/"
+                       , dependencies = TRUE
+                       )
+    }
+    library(packages[i], character.only = TRUE)
+  }
+
+```
+
+## 2.1 Retrieve Data from FRED API.
+
+```{r set_key, include=FALSE}
+# don't leave this in posted code change to env variable 
+
+# set api key for session 
+fredr_set_key("1cd3e7151dc78ce39e031aa227243ebc")
+
+```
+
+The data that we will use in the project can be found on the FRED
+API. We will use the `fredr` package to access the API quickly. This
+comes with the added benefit to be able to keep the index up to date.
+
+We will then use the `fetch_data`function in a loop to grab all the data we want
+and store the data frames within a list so they are easy to keep track
+of.
+
+```{r fetch_function}
+# function that collects our data 
+# coerce to data frame
+fetch_data <- function(x) {
+  as.data.frame(fredr(
+    series_id = x,
+    frequency = "m"
+  ))
+}
+```
+
+```{r retrive_data}
+# list of series IDs 
+cmpts <- c(
+  "AWHMAN",
+  "ICSA",
+  "ACOGNO",
+  "NOCDFSA066MSFRBPHI",
+  "NEWORDER",
+  "PERMIT",
+  "M2REAL",
+  "T10YFF",
+  "UMCSENT",
+  "INDPRO"
+)
+# place to store data frames 
+data_list <- list()
+
+# loop through list to collect data and store in list
+for(i in 1:length(cmpts)){
+  data_list[[cmpts[i]]] <- fetch_data(cmpts[i])
+}
+```
+
+## 2.2 Process data
+
+Now that we have our data we will need to do some processing so that we
+can create a data frame that is in the correct format. First we need to
+rename the `value` column from each API request to its actual name. Then
+we will un-nest our list of data frames and put each column representing
+a component and each row representing a month. finally we will be done
+once we create a tsibble out of our merged data frame.
+
+```{r renam_dropcols}
+# change name of column `value` in each data frame in prep
+for(i in 1:length(cmpts)) {
+  # rename individual df columns
+ names(data_list[[i]])[names(data_list[[i]]) == "value"] <- cmpts[i]
+ # use list slicing to drop un-needed columns 
+ data_list[[i]] <- data_list[[i]][, c("date", cmpts[i])]
+}
+```
+
+```{r merge_data}
+# Function to merge data frames by 'date'
+merge_dfs_by_date <- function(dfs) {
+  reduce(dfs, full_join, by = "date")
+}
+
+# Merging all data frames by 'date'
+merged_df <- merge_dfs_by_date(data_list)
+
+```
+
+```{r tibblification}
+df <-  merged_df |>
+  # format date
+  mutate(date = as.yearmon(date)) |>
+  # coerce to tibble
+  as_tibble(index = date)
+
+```
+
+## 2.3 Collect and Format NBER Turning Points
+
+The last step in preparing our data is to collect and then reformat the
+NBER business cycle dates so that we can plot them. This will allow us to
+visually inspect our leading index and put it context of the past
+business cycles.
+
+We will start by using the `fetch_data` function that was defined
+earlier. The FRED API keeps the recession dates in binary format
+`1 = Rrecession` `0 = NON-Recession`. We must change this format for
+easy plotting with `ggplot` to accomplish this we must create a `peak`
+and `trough` columns that contain the dates.
+
+```{r biss_cycl}
+# retrieve NBER Recession Dates 
+RECD <- fetch_data("USRECD")
+```
+
+```{r create_tsibble_B}
+
+# drop columns that are not needed
+RECD <-  RECD |>
+  select(-realtime_start,-realtime_end) 
+
+# show data frame structure
+str(RECD)
+```
+Create leading and lagging values and then check those values for changes from 0 to 1 and 1 to 0 to identity the peaks and troughs of the business cycle.  
+```{r find_dates}
+
+# find the peaks and trough in recession dates 
+statechanges <- RECD |>
+  mutate(prev_value = lag(value),
+         lead_value = lead(value)) |>
+  filter((value == 1 & prev_value == 0) | (value == 1 & lead_value == 0)) |>
+  mutate(indctr = ifelse(lead_value == 1, "peak", "trough") ) |>
+  select(date,indctr)
+
+```
+
+We should now have the peaks and toughs of the business cycle. This data needs to processed slightly so that it is in the proper format for plotting. 
+
+```{r pivot_data, warning=FALSE}
+# reformat data
+turning_points <-  statechanges[2:69,] |>
+  pivot_wider(names_from = indctr,
+              values_from = date)
+
+
+# Unnest the list-cols from previous line
+turning_points <- unnest(turning_points, cols = c(trough, peak))
+
+# Ensure peak and trough columns in turning_points are in Date format
+turning_points$peak <- as.yearmon(as.Date(turning_points$peak, format = "%Y-%m-%d"))
+turning_points$trough <- as.yearmon(as.Date(turning_points$trough, format = "%Y-%m-%d"))
+
+```
+
+# 3.0 Plot Components
+
+In this section we will create some plots of all of our componets, this is done so that we can verfy that our data came in correctly and to get some insight on each one. We must create some functions that use the `ggplot` library. The functions will then be applied and we will store the results in a list in order to keep them organized.  
+
+## 3.1 Plotting Functions
+
+```{r plotting_funA}
+
+# ggplot main plotting function
+cmpt_plot <- function(Data, Cmpt, color = "blue"){
+  
+  # Filter the data to remove rows where the Cmpt column is NA
+  filtered_data <- Data[!is.na(Data[[Cmpt]]), ]
+  
+  
+  # build plot
+  ggplot(filtered_data, aes(x = date, y = .data[[Cmpt]])) +
+  geom_line(color = color) +
+  theme_linedraw()
+}
+
+```
+
+```{r plotting_funB}
+
+# function to display recession bars 
+recession_bars <- function(start,stop){
+  geom_rect(data=turning_points[start:stop,], 
+            aes(xmin=peak,
+                xmax=trough,
+                ymin=-Inf,
+                ymax=+Inf),
+            fill='grey1',
+            alpha=0.2,
+            inherit.aes = FALSE )
+}
+```
+
+```{r}
+# apply plotting function to list  
+plots_list <- lapply(colnames(df), cmpt_plot, Data = df)
+```
+
+## 3.2 Raw Componet Plots
+
+### 3.21 AWHMAN
+
+```{r plot_data_A, warning=FALSE}
+
+plots_list[[2]] + 
+  labs(title = "Average Weekly Hours of Production and Nonsupervisory Employees, Manufacturing")+
+  recession_bars(22,44)
+
+```
+
+### 3.22ICSA
+
+```{r plot_data_B, warning=FALSE}
+
+plots_list[[3]] + 
+  labs(title = "Average weekly initial claims for unemployment insurance") + 
+  recession_bars(27,44)
+```
+
+### 3.23 ACOGNO
+
+```{r plot_data_C, warning=FALSE}
+
+plots_list[[4]]  + 
+  labs(title = "Manufacturers' new orders, consumer goods and materials") + 
+  recession_bars(31,44)
+```
+
+### 3.24 NOCDF
+
+```{r plot_data_D, warning=FALSE}
+
+plots_list[[5]]  + 
+  labs(title = "ISM new order index") +
+  recession_bars(27,44)
+
+```
+
+### 3.25 NEWORDER
+
+```{r plot_data_E, warning=FALSE}
+
+plots_list[[6]]  + 
+  labs(title = "Manufacturers' new orders, non-defense capital goods excl. aircraft") +
+  recession_bars(31,44)
+```
+
+### 3.26 PERMIT
+
+```{r plot_data_F, warning=FALSE}
+
+plots_list[[7]]  + 
+  labs(title = "Housing Permits")  + recession_bars(26,44)
+```
+
+### 3.27 M2REAL
+
+```{r plot_data_G, warning=FALSE}
+
+plots_list[[8]]  + 
+  labs(title = "M2") + recession_bars(26,44)
+```
+
+### 3.28 T10YFF
+
+```{r plot_data_H, warning=FALSE}
+
+
+plots_list[[9]]  + 
+  labs(title = "Interest rate spread, 10-year Treasury bonds less federal funds") + recession_bars(26,44)
+
+```
+
+### 3.29 UMCSENT
+
+```{r plot_data_I, warning=FALSE}
+
+plots_list[[10]]  + 
+  labs(title = "Avg. consumer expectations for business and economic conditions") + recession_bars(24,44)
+
+```
+
+### 3.3 INDPRO
+
+```{r plot_data_j, warning=FALSE}
+
+plots_list[[11]]  + 
+  labs(title = "Industrial Production: Total Index ") +
+  recession_bars(17,44)
+
+```
+
+# 4.0 Calculate Leading Index
+
+
+
+To calculate our leading index we will use the conference boards [composite index calculation methodology](https://www.conference-board.org/data/bci/index.cfm?id=2154). This method uses 6 steps and can boils all of the information in each series into one index that will serve as an early warning sign of the business cycle.
+
+
+## 4.1 Step (1)
+
+Month-to-month changes are computed for each component using the
+symmetric percent change formula for all components that are not already in that form. 
+
+We will also start by dropping our missing data, each component has a different length so this will standardize them so that we don't have to do imputation. 
+
+```{r filter_data}
+# find complete cases 
+ df$ind <-complete.cases(df)
+
+# drop all but the complete cases 
+df <- df |>
+  filter(ind == TRUE) |>
+  select(-ind)
+
+
+# we end up with data from 1992- 2024
+```
+
+```{r symmetric_p}
+
+# Function to calculate symmetric percent change for vectors
+symmetric_percent_change <- function(X_t) {
+  return(200 * ((X_t - lag(X_t)) / (X_t + lag(X_t))))
+}
+```
+
+```{r apply_sp}
+# Columns to use
+columns_to_change <- c("AWHMAN", "ICSA", "ACOGNO","NEWORDER", "PERMIT","M2REAL", "UMCSENT", "INDPRO")
+
+# Create a new tsibble to store results
+pchange_results <- df |>
+  select(date, all_of(columns_to_change))
+
+# calculate symmetric percent change and add new columns.
+pchange_results <- pchange_results %>%
+  mutate(across(all_of(columns_to_change), 
+                .fns = ~ symmetric_percent_change(.),
+                .names = "symmetric_{.col}"))
+
+# Convert to data frame
+pchange_results <- as.data.frame(pchange_results)
+
+# Print the results
+stargazer(pchange_results, type = "text")
+```
+
+
+## 4.2 Step (2)
+
+The monthly contributions of the components are adjusted to equalize the
+volatility of each component.
+
+```{r add_columns}
+# add columns that don't need symmetric %
+# also invert jobless cliams 
+pchange_results <- pchange_results |> 
+  mutate(T10YFF = df$T10YFF,
+         NOCDF = df$NOCDFSA066MSFRBPHI,
+         INDPRO = df$INDPRO,
+         INDPRO_GR = symmetric_INDPRO)
+```
+
+```{r calculate_adj_fun }
+
+calculate_adjusted <- function(data, columns) {
+  adjusted_columns <- c()
+  data <- stats::na.omit(data)
+  for (col in columns) {
+    # calculate standard deviation
+    v_x <- sd(data[[col]])
+    # Check if the standard deviation is zero or NA
+    if (is.na(v_x) || v_x == 0) {
+      stop(paste("Standard deviation for column", col, "is NA or zero, can't invert"))
+    }
+    # Invert Standard deviation
+    w_x <- 1/v_x
+    # Append to adjusted columns
+    adjusted_columns <- c(adjusted_columns, w_x)
+  }
+  
+  # sum inverted standard deviations for all columns
+  k <- sum(adjusted_columns)
+  
+  # restate sum between 1,0 for all columns
+  adjusted_columns <- adjusted_columns / k
+  
+  # Adjust contributions for all columns
+  for (i in 1:length(columns)) {
+    col <- columns[i]
+    rx <- adjusted_columns[i]
+    data[[paste0("adj_", col)]] <- rx * data[[col]]
+  }
+  
+  return(data)
+}
+```
+
+
+```{r equalize_volatility}
+
+# Columns for which you want to calculate adjusted contributions
+columns_to_adj <- c("symmetric_AWHMAN",                     
+                        "symmetric_ICSA",                    
+                        "symmetric_ACOGNO",                     
+                        "symmetric_NEWORDER",                   
+                        "symmetric_PERMIT",                    
+                        "symmetric_M2REAL",                      
+                        "symmetric_UMCSENT",
+                        "T10YFF",
+                        "NOCDF")
+
+
+# Call the function to calculate adjusted contributions for all columns
+pchange_results <- calculate_adjusted(pchange_results, columns_to_adj)
+
+
+# Print the results
+stargazer(pchange_results, type = "text", title = "Leading index")
+
+```
+
+## 4.3 Step (3)
+
+Add the adjusted monthly contribution across the components for each
+month to obtain the growth rate of the index.
+
+```{r obtain_growthrate}
+# Get the columns with adjusted contributions
+adj_columns <- grep("^adj_", names(pchange_results), value = TRUE)
+
+
+# Calculate the monthly growth rate for each month
+pchange_results$new_monthly_growth_rate <- rowSums(pchange_results[, adj_columns])
+# Print the results
+stargazer(pchange_results, type = "text")
+```
+
+## 4.4 Step (4)
+
+The sum of the adjusted contributions, i.e., growth rates, of the
+composite indexes are adjusted to equate their trends to that of the
+coincident index. This is accomplished by adding an adjustment factor,
+a, to the growth rates of the index each month (it\`= it+ a). For
+example, the trend adjustment factor for the leading index is computed
+by subtracting its average monthly growth rate (sum over [t] it/ T where
+T is the number of observations in the sample) from the average monthly
+growth rate of the coincident index.
+
+```{r step_4}
+# Step 4: Adjust growth rates to match INDPRO   
+
+# intresting problem is that the first value of indpro is gone because its symmetric precent cahnge 
+
+# Using INDPRO to proxy for coincident index 
+
+
+adjust_trend <- function(growth_rate, coincident_index_growth_rate) {
+  a <- mean(coincident_index_growth_rate) - mean(growth_rate)  # Compute adjustment factor
+  return(growth_rate + a)  # Adjusted growth rates
+}
+
+pchange_results$New_adj_GROWTHRATE  <- adjust_trend(pchange_results$new_monthly_growth_rate,
+                                              pchange_results$INDPRO_GR)
+```
+
+## 4.5 Step (5)
+
+The level of the index is computed using the symmetric percent change
+formula. The index is calculated recursively starting from an initial
+value of 100 for the first month of the sample period (i.e. January
+1959)
+
+```{r compute_index_level}
+# Initialize the leading index levels
+leading_index <- numeric(nrow(pchange_results))
+leading_index[1] <- 100
+
+# Compute the leading index levels recursively
+for (i in 2:nrow(pchange_results)) {
+  leading_index[i] <- leading_index[i - 1] * (200 + pchange_results$New_adj_GROWTHRATE[i]) / (200 - pchange_results$New_adj_GROWTHRATE[i])
+}
+
+# Add the leading index levels to the dataframe
+pchange_results$leading_index <- leading_index
+
+# Print the results
+stargazer(pchange_results, type = "text")
+```
+
+## 4.6 Step (6)
+
+The index is rebased to average 100 in the base year.
+
+```{r rebase, warning=FALSE}
+
+raw_index <- pchange_results |>
+  select(date,leading_index)
+
+# create a new column for the leading index
+df <- df |>
+  left_join(raw_index, by = "date")
+
+# Convert the date strings to yearmon objects
+base_year <- as.yearmon(c("2016-01-01", "2016-02-01", "2016-03-01", "2016-04-01",
+                  "2016-05-01", "2016-06-01", "2016-07-01", "2016-08-01", 
+                  "2016-09-01", "2016-10-01", "2016-11-01", "2016-12-01"))
+
+# Filter the data for the base year (2016)
+base_year_data <- df |>
+  filter(date %in% base_year)
+
+# Calculate the average for the base year (January 2016)
+base_year_average <- mean(base_year_data$leading_index, na.rm = TRUE)
+
+# Rebase the leading index
+df <- df |>
+  mutate(rebased_leading_index = leading_index * 100 / base_year_average)
+```
+
+```{r rename}
+# Rebase the leading index
+df <- df |>
+  rename(LEI = rebased_leading_index)
+
+head(df)
+# drop Na from first row, this corrosponds to feb 1992
+# this is done because of use of symmetric % change cant be computed on the first value 
+df <- stats::na.omit(as.data.frame(df))
+stargazer(df, type = "text")
+```
+
+## 4.7 Plot LEI 
+
+```{r plot_leading_index}
+cmpt_plot(df,"LEI", color = "blue") + 
+  recession_bars(31,34) + 
+  labs(title = "Leading Index")
+```
+
+
+
+
+Unfortunately we only have enough data to construct this index for 3 recessions but we will have to make due. Upon visual inspection the leading index dose the best around the 2008 recession, showing a decline well before the recession and its trough is slightly before the NBER trough date. As expected the leading index dose not do a great job of forecasting the pandemic recession. This is due to this recession being brought on by exogenous factors in the form of a virus. The time proceeding 2001 the recession is just okay. It seems like the index begins to take a dip in late 2000 but the lead time seems much shorter than in 2008. This could be due to some of the conditions surrounding the dot-com bubble that burst in late 2000. 
+
+
+```{r}
+tail(df)
+```
+
+*Important note*
+*This data tends to lag behind by about 2 months because some of the serise take longer than others to be puplished by the fed.*
+
+
+# 5.0 Trend Estimation 
+
+The next step is to use the one sided hodrick-presscott filter to estimate the trend of our index. This will give us some important information that is left over in the cycle component AKA the deviations from trend. The HP filter is a robust estimation technique that has been shown to be the best estimation technique outside of the PAT or phase average trend. We don't have a ton of observations so PAT is not an option in this scenario. 
+```{r HP_philly2}
+# create data frame for trend calculation
+y <- as.data.frame(df$LEI)
+
+# create trend 
+LEI_hptrend <- hp1(y, lambda = 144000)
+
+# Calculate cycles/ devation from trend
+LEI_hpcycle = y - LEI_hptrend
+
+# Adding a new column using mutate
+df <- df |>
+  mutate(LEI_hpcycle = LEI_hpcycle[,1],
+         LEI_hptrend = LEI_hptrend[,1])
+```
+
+## 5.1 Plot with HP Trend Line.
+
+```{r plot_cindhp, warning=FALSE}
+
+# Define colors and labels for the legend
+colors <- c( "deepskyblue")
+labels <- c("hptrend")
+
+
+# Build plot
+LEI_hptrend_ggplot = cmpt_plot(df, "LEI" ) +
+  # Line for coincident_index with legend
+  geom_line(aes(y = LEI_hptrend , color = "hptrend"),
+            alpha = 0.7,
+            show.legend = TRUE) +
+  # Label graph
+  labs(x = "Date (monthly)",
+       y = "Index 2016 = 100", 
+       title = " Leading index and HP trend") + 
+  
+  # Assign colors and labels
+  scale_color_manual(values = colors, labels = labels)
+
+# recession bars
+LEI_hptrend_ggplot = LEI_hptrend_ggplot + recession_bars(31,34)
+
+print(LEI_hptrend_ggplot)
+```
+
+## 5.3 Plot Devations from Trend
+
+```{r leading_divtrend, warning=FALSE}
+# Build plot
+LEI_divhptrend_ggplot = cmpt_plot(df, "LEI_hpcycle", color = "darkturquoise" ) +
+  # Label graph
+  labs(x = "Date (monthly)",
+       y = "Index 2016 = 100", 
+       title = " Leading index devations from HP trend") 
+  
+# recession bars
+LEI_divhptrend_ggplot = LEI_divhptrend_ggplot + recession_bars(31,34)
+
+#display plot
+print(LEI_divhptrend_ggplot)
+```
+
+## 5.4 YoY Precent Change
+```{r calc_plot_yoy, warning=FALSE}
+
+# cacluate year over year growth rate
+df <- df|> 
+  mutate(YoY = (LEI - lag(LEI,12)) / lag(LEI,12))
+
+# plot yoy
+cmpt_plot(df,"YoY", color = "darkslategray4") + 
+  recession_bars(31,34)+
+  labs(title= "Leading Index Year over Year Growth Rate")
+
+```
+
+
+
+
+To get an alternative look at the cyclical portion of the leading index we can use the YoY growth rate. This should basically de-trends the data in a way that is easier to interpret. This plot differs slightly from the one above because it has more sections in the postive values but tells pretty much the same story. 
+
+The reason we look at the de-trended values becomes clear when looking at the plots. For example in the YoY plot we can see the leading index growth rate goes negative a few months before each recession. For the more normal recessions we see the growth rate go negative several months beforehand, with (2010 previous 19 months negative) and (2001 previous 7 months negative) beforehand. The leading index would have definitely done a great job of forecasting the 2008 recession but could have missed the 2001 recession, 7 months negative is not a strong signal specifically because there are other periods with negative values that do not result in a recession. 
+The recession triggered by the pandemic is an interesting case that is somewhat of an outlier. This is because the event that caused it exogenous to the economy and our index, we have not included a measure of global pandemic risk. None the less its an interesting event to study more in the future and maybe some information can be obtained. 
+
+
+
+# 6.0 Evaluation. 
+
+
+In this section we will evaluate the Leading index and see how well it aligns with the established recession dates and then we will use the Granger Causality test to see if the leading index causes the INDPRO series that we are using as a proxy for the current state of the economy. 
+
+## 6.1 turing point Analysis 
+
+
+Use the `BCDating` package and specifically the Harding-Pagan method for detecting turning points. Unfortunately we cannot use `tsisbble` objects with the turning points algorithm so we must create a time series object. Additionally this algorithm is for designed for quarterly data so I have adusted the mincycle and minphase length. 
+```{r turning_points}
+newind <- ts(df$LEI,
+             start = 1993, 
+             end = 2023,
+             frequency = 12)
+
+turns <- BBQ(newind, mincycle = 24, minphase = 4, name = "" )
+
+
+# Plot turns
+plot(turns, main = "Leading Index turing points")
+
+print(turns)
+```
+
+## 6.2 Granger causality test 
+
+To preform the Granger causality test we need to make sure that our data is stationary. This will be done through examining the results from the Autocorrelation function and the KPSS unit root test. Then we will diffrence the data as needed. 
+
+```{r tsibblification}
+df_tsibble <-  df |>
+  mutate(date = yearmonth(date)) |>
+  as_tsibble(index = date)
+```
+
+### 6.23 Test stationarity of LEI 
+```{r test_stationarity_LEI}
+df_tsibble|>
+  ACF(LEI) |>
+  autoplot()+
+  labs(title = "ACF of LEI")
+
+df_tsibble|>
+  PACF(LEI) |>
+  autoplot()+
+  labs(title = "PACF of LEI ")
+
+df_tsibble|>
+  features(LEI, unitroot_kpss)
+```
+```{r re_test_LEI}
+df_tsibble|>
+  ACF(difference(LEI)) |>
+  autoplot()+
+  labs(title = "ACF of LEI")
+
+df_tsibble|>
+  PACF(difference(LEI)) |>
+  autoplot()+
+  labs(title = "PACF of LEI ")
+
+df_tsibble|>
+  features(difference(LEI), unitroot_kpss)
+
+
+df_tsibble <- df_tsibble |>
+  mutate(LEI_diff = difference(LEI))
+```
+### 6.23 Test stationarity of INDPRO
+
+```{r test_stationarity_INDPRO}
+df_tsibble|>
+  ACF(INDPRO) |>
+  autoplot()+
+  labs(title = "ACF of INDPRO")
+
+df_tsibble|>
+  PACF(INDPRO) |>
+  autoplot()+
+  labs(title = "PACF of INDPRO ")
+
+df_tsibble|>
+  features(INDPRO, unitroot_kpss)
+```
+
+
+```{r re_test_INDPRO}
+df_tsibble|>
+  ACF(difference(INDPRO)) |>
+  autoplot()+
+  labs(title = "ACF of INDPRO")
+
+df_tsibble|>
+  PACF(difference(INDPRO)) |>
+  autoplot()+
+  labs(title = "PACF of INDPRO ")
+
+df_tsibble|>
+  features(difference(INDPRO), unitroot_kpss)
+
+
+df_tsibble <- df_tsibble |>
+  mutate(INDPRO_diff = difference(INDPRO))
+```
+
+### 6.24 Create ts objects 
+
+
+
+```{r}
+LEI_ts <- ts(df_tsibble$LEI_diff,
+             start = 1993, 
+             end = 2023,
+             frequency = 12)
+
+INDPRO_ts <- ts(df_tsibble$INDPRO_diff,
+             start = 1993, 
+             end = 2023,
+             frequency = 12)
+```
+
+
+
+```{r}
+lmtest::grangertest(LEI_ts, INDPRO_ts, order=2, test="F")
+  
+```
+
+The Granger causality test shows that the LEI causes INDPRO. This finding indicates that we can use the lEI to understand where the economy is going to be in the business cycle. An important thing to remember is that we are using INDPRO to proxy for the state of the economy and this is just an approximation. With that being said this Leading Index of Economic Indicators dose a reasonably good job at forecasting movements in the economy 
+
+
+
+
+**NEXT STEPS** 
+- create monetary diffusion index 
+- create manufacturing diffusion index 
+
+# 7.0 References
+
+
+1.) <https://www.conference-board.org/topics/consumer-confidence>
+
+2.)
+<https://www.stlouisfed.org/publications/regional-economist/april-2003/consumer-confidence-surveys-do-they-boost-forecasters-confidence#figure2>
+
+3.) <https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8814802/>
+
+4.)
+<https://link.springer.com/referenceworkentry/10.1007/978-94-007-0753-5_542>
+
+5.) <https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7882057/>
+
+6.)
+<https://www.econstor.eu/bitstream/10419/217935/1/sajbm-v17i3-1048.pdf>
+
+7.)
+<https://www.jstor.org/stable/2526134?casa_token=6ph2kw3_e-8AAAAA%3ArivCUirg2zk1rtGCyMrtGMpVntYm_43ZzrmFnJgiHQXyGUHB1vmZweX0r2d9MTGw4G5eRHJJYWayF_tJ9H-x15CCXUZluMh4RH7L1yYabhy3w-ytM2M>
+
+8.)
+<https://www.tandfonline.com/doi/full/10.1080/13504851.2021.1907278?casa_token=URsQRH9M018AAAAA%3Az3RFw-ymKjJqtjy7TmUrCkQsb0IApYGAzvTVBhkzAhtXieD4UQUkzCEVZwvO7hdLJyQDM7zDc6PP>
+
+9.) <https://www.jstor.org/stable/1209163>
+
+10.) <https://acta.uni-obuda.hu/Bilan_Gavurova_Stanislaw_Tkacova_78.pdf>
+
+11.)
+<https://www.joim.com/wp-content/uploads/emember/downloads/p0671.pdf>
+
+12.)
+<https://onlinelibrary.wiley.com/doi/full/10.1002/jae.695?casa_token=Oyem09ij9IMAAAAA%3AnuBS7S3oHeZbdE1Hh2cWw55kzIaQnu4bfelGO4OWzHtpb-50ojwTOJLyvmgm1isujdX0o3jF1hnf3-w>
+
+13.) <https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2730429>
+
+**Data sources** 
+
+14.)
+    <https://www.philadelphiafed.org/surveys-and-data/regional-economic-analysis/state-coincident>
+    -   Not gonna use: State coincident indexes
+
+15.) <https://www.conference-board.org/data/bci/index.cfm?id=2160> -
+Description of components
+
+16.) <https://www.federalreserve.gov/data.htm> - Usefull data hub
+
+18.) <https://fred.stlouisfed.org/categories> - Also Usfull data hub
+
+19.) Using the same file from class for the historic calculation of
+coincident index with new variable added.
+
+20.)
+<https://www.frbsf.org/research-and-insights/data-and-indicators/daily-news-sentiment-index/> -
+This is daily news sentiment!
+
+
+
+
+# 8.0 Next steps
+
+- read through code line by line to double check validity/ make improvements (already done with section 1,2,3)
+
+- add monetary diffusion index 
+
+- add and calculate coincidence index 
+
+- make R shiny app to display work 
+
