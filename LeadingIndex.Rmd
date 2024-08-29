@@ -200,6 +200,7 @@ merged_df <- merge_dfs_by_date(data_list)
 ```
 
 ```{r tibblification}
+# tibble will be easiest to work with
 df <-  merged_df |>
   # format date
   mutate(date = as.yearmon(date)) |>
@@ -269,17 +270,17 @@ turning_points$trough <- as.yearmon(as.Date(turning_points$trough, format = "%Y-
 
 ## 2.4 GDP Data 
 
-```{r }
+```{r get_gdp}
+# get quartly gdp data
 rgdp_q <- fetch_data("GDPC1", frequency = "q")
 
+# format the data
 rgdp_q <- rgdp_q |>
   rename(GDPC1 = value) |>
   mutate(date = yearquarter(as.Date(date, format = "%Y-%m-%d"))) |>
   select(date, GDPC1)
   
 ```
-
-
 
 
 
@@ -321,8 +322,10 @@ recession_bars <- function(start,stop){
 }
 ```
 
-```{r}
+```{r apply_plotting function}
+
 # apply plotting function to list  
+# lapply is probably faster than a loop
 plots_list <- lapply(colnames(df), cmpt_plot, Data = df)
 ```
 
@@ -420,9 +423,11 @@ plots_list[[11]]  +
 
 ```
 
-```{r}
+```{r gdp_plot}
+# build plot 
 gdp_plot <- cmpt_plot(rgdp_q,"GDPC1")
 
+# add recession bars
 gdp_plot +
 labs(title = "Real GDP") +
   recession_bars(22,44)
@@ -454,6 +459,7 @@ df <- df |>
 
 
 # we end up with data from 1992- 2024
+# slightly verbose way of doing this but it works well 
 ```
 
 ```{r symmetric_p}
@@ -468,12 +474,12 @@ symmetric_percent_change <- function(X_t) {
 # Columns to use
 columns_to_change <- c("AWHMAN", "ICSA", "ACOGNO","NEWORDER", "PERMIT","M2REAL", "UMCSENT", "INDPRO")
 
-# Create a new tsibble to store results
+# Create a new tibble to store results
 pchange_results <- df |>
   select(date, all_of(columns_to_change))
 
 # calculate symmetric percent change and add new columns.
-pchange_results <- pchange_results %>%
+pchange_results <- pchange_results |>
   mutate(across(all_of(columns_to_change), 
                 .fns = ~ symmetric_percent_change(.),
                 .names = "symmetric_{.col}"))
@@ -509,7 +515,7 @@ calculate_adjusted <- function(data, columns) {
   for (col in columns) {
     # calculate standard deviation
     v_x <- sd(data[[col]])
-    # Check if the standard deviation is zero or NA
+    # Check if the standard deviation is zero or NA 
     if (is.na(v_x) || v_x == 0) {
       stop(paste("Standard deviation for column", col, "is NA or zero, can't invert"))
     }
@@ -579,7 +585,7 @@ stargazer(pchange_results, type = "text")
 ## 4.4 Step (4)
 
 The sum of the adjusted contributions, i.e., growth rates, of the
-composite indexes are adjusted to equate their trends to that of the
+composite indexes are adjusted to equate their trends to that of a
 coincident index. This is accomplished by adding an adjustment factor,
 a, to the growth rates of the index each month (it\`= it+ a). For
 example, the trend adjustment factor for the leading index is computed
@@ -590,10 +596,7 @@ growth rate of the coincident index.
 ```{r step_4}
 # Step 4: Adjust growth rates to match INDPRO   
 
-# intresting problem is that the first value of indpro is gone because its symmetric precent cahnge 
-
 # Using INDPRO to proxy for coincident index 
-
 
 adjust_trend <- function(growth_rate, coincident_index_growth_rate) {
   a <- mean(coincident_index_growth_rate) - mean(growth_rate)  # Compute adjustment factor
@@ -642,9 +645,10 @@ df <- df |>
   left_join(raw_index, by = "date")
 
 # Convert the date strings to yearmon objects
-base_year <- as.yearmon(c("2016-01-01", "2016-02-01", "2016-03-01", "2016-04-01",
-                  "2016-05-01", "2016-06-01", "2016-07-01", "2016-08-01", 
-                  "2016-09-01", "2016-10-01", "2016-11-01", "2016-12-01"))
+base_year <- as.yearmon(c("2016-01-01", "2016-02-01", "2016-03-01",
+                          "2016-04-01", "2016-05-01", "2016-06-01",
+                          "2016-07-01","2016-08-01", "2016-09-01",
+                          "2016-10-01","2016-11-01", "2016-12-01"))
 
 # Filter the data for the base year (2016)
 base_year_data <- df |>
@@ -684,8 +688,10 @@ cmpt_plot(df,"LEI", color = "blue") +
 Unfortunately we only have enough data to construct this index for 3 recessions but we will have to make due. Upon visual inspection the leading index dose the best around the 2008 recession, showing a decline well before the recession and its trough is slightly before the NBER trough date. As expected the leading index dose not do a great job of forecasting the pandemic recession. This is due to this recession being brought on by exogenous factors in the form of a virus. The time proceeding 2001 the recession is just okay. It seems like the index begins to take a dip in late 2000 but the lead time seems much shorter than in 2008. This could be due to some of the conditions surrounding the dot-com bubble that burst in late 2000. 
 
 
-```{r}
-tail(df)
+```{r display_LEI}
+# use kable to display recent LEI values
+kable(tail(df)) |>
+  kableExtra::kable_classic(html_font = "Cambria", full_width = TRUE)
 ```
 
 *Important note*
@@ -695,6 +701,7 @@ tail(df)
 # 5.0 Trend Estimation 
 
 The next step is to use the one sided hodrick-presscott filter to estimate the trend of our index. This will give us some important information that is left over in the cycle component AKA the deviations from trend. The HP filter is a robust estimation technique that has been shown to be the best estimation technique outside of the PAT or phase average trend. We don't have a ton of observations so PAT is not an option in this scenario. 
+
 ```{r HP_philly2}
 # create data frame for trend calculation
 y <- as.data.frame(df$LEI)
@@ -801,13 +808,14 @@ df_q <- df |>
 ```
 
 
-
 ```{r tsibblification}
+# create tsibble and format data for eval 
 df_tsibble <-  df_q |>
   mutate(date = yearquarter(quarter)) |>
   select(-quarter) |>
   as_tsibble(index = date) 
 
+# join our LEI with real GDP on quartly level
 ind_eva <- left_join(df_tsibble, rgdp_q, by = "date")
 
 ```
@@ -819,13 +827,14 @@ Use the `BCDating` package and specifically the Harding-Pagan method for detecti
 
 
 ```{r plot_leading_index}
+# plot LEI again for comparison
 cmpt_plot(df,"LEI", color = "blue") + 
   recession_bars(31,34) + 
   labs(title = "Leading Index")
 ```
 
 
-```{r}
+```{r display_trning points}
 # turning points 
 turning_points[31:34,]
 ```
@@ -848,7 +857,8 @@ turns <- BBQ(newind, mincycle = 5, minphase = 2, name = "" )
 plot(turns, main = "Leading Index turing points")
 
 ```
-```{r}
+```{r display_estmated_turns}
+# display turning point 
 print(turns)
 ```
 
@@ -863,29 +873,35 @@ To preform the Granger causality test we need to make sure that our data is stat
 
 ## 6.3 Test stationarity
 
+We will inspect the data further so that we can gather more infomrmation needed to model. This is an exploratory step thats needed to used the granger test. 
 
 ### 6.3.1 LEI test and diffrencing
 
 ```{r test_stationarity_LEI}
+# ues autcorrlation function & plot
 ind_eva |>
   ACF(LEI) |>
   autoplot()+
   labs(title = "ACF of LEI")
 
+# use partial auto-correlation function & plot
 ind_eva |>
   PACF(LEI) |>
   autoplot()+
   labs(title = "PACF of LEI ")
 
+# preform kpss test
 ind_eva |>
   features(LEI, unitroot_kpss)
 ```
 ```{r re_test_LEI}
+# use autcorrlation function on diffrenced data & plot 
 ind_eva |>
   ACF(difference(LEI)) |>
   autoplot()+
   labs(title = "ACF of LEI")
 
+# use partial autocorrelation function on diffrenced data & plot
 ind_eva |>
   PACF(difference(LEI)) |>
   autoplot()+
@@ -894,39 +910,54 @@ ind_eva |>
 ind_eva |>
   features(difference(LEI), unitroot_kpss)
 
-
+# preform kpss test 
 ind_eva  <- ind_eva  |>
   mutate(LEI_diff = difference(LEI))
 ```
+
+```{r diff_LEI_plot}
+# plot first diffrenced LEI 
+cmpt_plot(ind_eva, "LEI_diff") +
+  recession_bars(31,34) + 
+  labs(title = "First diffrenced LEI ")
+```
+
 ### 6.3.2  Real GDP test and diffrencing 
 
-```{r test_stationarity_INDPRO}
+```{r test_stationarity_GDPC1}
+
+# use autocorrelation function and plot 
 ind_eva |>
   ACF(GDPC1) |>
   autoplot()+
   labs(title = "ACF of Real GDP")
 
+# use partical autocorrelation function and plot
 ind_eva |>
   PACF(GDPC1) |>
   autoplot()+
   labs(title = "PACF of Real GDP")
 
+# preform kpss test
 ind_eva |>
   features(GDPC1, unitroot_kpss)
 ```
 
 
-```{r re_test_INDPRO}
+```{r re_test_GDPC1}
+# use autocorrelation function on diffenced data & plot
 ind_eva |>
   ACF(difference(GDPC1)) |>
   autoplot()+
   labs(title = "ACF of Real GDP")
 
+# use partical autocorrelation function on diffrenced data & plot
 ind_eva |>
   PACF(difference(GDPC1)) |>
   autoplot()+
   labs(title = "PACF of Real GDP")
 
+# kpss test on diffrenced data
 ind_eva |>
   features(difference(GDPC1), unitroot_kpss)
 
@@ -937,8 +968,13 @@ ind_eva  <- ind_eva  |>
 
 
 ```{r}
-# lets plot the differenced data here for further conformation
+# Plot diffrened GDP
+cmpt_plot(ind_eva, "GDPC1_diff") +
+  recession_bars(31,34) + 
+  labs(title = "First diffrenced Real GDP")
+
 ```
+
 
 
 
@@ -950,7 +986,7 @@ ind_eva  <- ind_eva  |>
 
 
 ```{r}
-# creat time serise objects for model
+# create time series objects for model cause its incompatible with S3
 LEI_ts <- ts(ind_eva $LEI_diff,
              start = 1993, 
              end = 2023,
@@ -966,18 +1002,13 @@ GDPC1_ts <- ts(ind_eva $GDPC1,
 
 ```{r}
 # fit test 
-lmtest::grangertest(LEI_ts, INDPRO_ts, order=2, test="F")
-  
+cause_test <- lmtest::grangertest(LEI_ts, GDPC1_ts, order=3, test="F")
+
+print(cause_test)
 ```
 
 The Granger causality test shows that the LEI causes GDP. This finding indicates that we can use the lEI to understand where the economy is going to be in the business cycle. An important thing to remember is that we are using INDPRO to proxy for the state of the economy and this is just an approximation. With that being said this Leading Index of Economic Indicators dose a reasonably good job at forecasting movements in the economy 
 
-
-
-
-**NEXT STEPS** 
-- create monetary diffusion index 
-- create manufacturing diffusion index 
 
 # 7.0 References
 
@@ -1035,16 +1066,4 @@ coincident index with new variable added.
 <https://www.frbsf.org/research-and-insights/data-and-indicators/daily-news-sentiment-index/> -
 This is daily news sentiment!
 
-
-
-
-# 8.0 Next steps
-
-- read through code line by line to double check validity/ make improvements (already done with section 1,2,3)
-
-- add monetary diffusion index 
-
-- add and calculate coincidence index 
-
-- make R shiny app to display work 
 
