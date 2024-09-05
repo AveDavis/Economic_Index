@@ -796,7 +796,7 @@ In this section we will evaluate the Leading index and see how well it aligns wi
 
 ### 6.2.1 Clean Up data 
 
-```{r}
+```{r quarterification}
 # make data quaterly 
 df_q <- df |>
   select(date, LEI, INDPRO) |>
@@ -826,7 +826,7 @@ ind_eva <- left_join(df_tsibble, rgdp_q, by = "date")
 Use the `BCDating` package and specifically the Harding-Pagan method for detecting turning points. The first thing we will do here is take a look at the LEI index with the official NBER recession dates. This will allow us to compare with the turning points detected in our index. 
 
 
-```{r plot_leading_index}
+```{r plot_leading_index2}
 # plot LEI again for comparison
 cmpt_plot(df,"LEI", color = "blue") + 
   recession_bars(31,34) + 
@@ -967,7 +967,7 @@ ind_eva  <- ind_eva  |>
 ```
 
 
-```{r}
+```{r plot_diff_GDP}
 # Plot diffrened GDP
 cmpt_plot(ind_eva, "GDPC1_diff") +
   recession_bars(31,34) + 
@@ -985,7 +985,7 @@ cmpt_plot(ind_eva, "GDPC1_diff") +
 ### 6.4 Preform Granger Causality test 
 
 
-```{r}
+```{r format_for_test}
 # create time series objects for model cause its incompatible with S3
 LEI_ts <- ts(ind_eva $LEI_diff,
              start = 1993, 
@@ -1000,7 +1000,7 @@ GDPC1_ts <- ts(ind_eva $GDPC1,
 
 
 
-```{r}
+```{r fit_test}
 # fit test 
 cause_test <- lmtest::grangertest(LEI_ts, GDPC1_ts, order=3, test="F")
 
